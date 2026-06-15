@@ -1,0 +1,49 @@
+name: Publish RankPilotAI Blog
+
+# Runs from a PUBLIC repo so GitHub Actions is free (the private rankpilotai-api /
+# marketing repos hit the account Actions spending limit and their workflows
+# fail to start). This repo holds NO secrets in code: WordPress credentials and a
+# read-only deploy key for the content repo live in GitHub Secrets.
+#
+# Flow: clone the private rankpilotai-marketing (read-only) -> publish any blog
+# post newer than the latest one already on WordPress (date-based, idempotent).
+
+on:
+  schedule:
+    # Daily 06:00 UTC, after the ~05:00 UTC writer that pushes the day's post.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout publisher
+        uses: actions/checkout@v4
+
+      - name: Set up read-only deploy key for the content repo
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.MARKETING_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Clone blog content (private, read-only)
+        run: |
+          GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes' \
+            git clone --depth 1 git@github.com:uludagv-alt/rankpilotai-marketing.git content
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Publish new posts
+        env:
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+        run: python3 scripts/publish.py content/blog-posts
