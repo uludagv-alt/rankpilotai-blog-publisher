@@ -14,6 +14,9 @@ on:
     - cron: '0 6 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write # only for the keepalive heartbeat commit below
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -47,3 +50,29 @@ jobs:
           WP_USERNAME: ${{ secrets.WP_USERNAME }}
           WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
         run: python3 scripts/publish.py content/blog-posts
+
+      # GitHub disables cron workflows in public repos after 60 days without
+      # repo activity (runs don't count, only pushes). Refresh with a heartbeat
+      # commit when the last push is older than 25 days. always() so persistent
+      # publish failures still keep the schedule alive (a dead cron would hide
+      # the failures entirely). Same pattern as suitberry-publisher.
+      - name: Keepalive against 60-day cron auto-disable
+        if: ${{ always() && github.event_name == 'schedule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          last=$(gh api repos/${{ github.repository }} -q .pushed_at || true)
+          if [ -n "$last" ]; then
+            age=$(( ( $(date +%s) - $(date -d "$last" +%s) ) / 86400 ))
+          else
+            age=999
+          fi
+          echo "last push: ${last:-unknown} (${age}d ago)"
+          if [ "$age" -ge 25 ]; then
+            git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" self
+            cd self
+            date -u +%FT%TZ > .heartbeat
+            git add .heartbeat
+            git -c user.name=keepalive -c user.email=keepalive@users.noreply.github.com commit -m "keepalive heartbeat"
+            git push
+          fi
